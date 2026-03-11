@@ -100,14 +100,14 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     texto = (
         "⚖️ *Bienvenido al Bot de Libertad Condicional*\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "📋 *Decreto N.º 130\\-2017 \\— Honduras*\n"
+        "📋 *Decreto N.º 130-2017 — Honduras*\n"
         "📌 Artículos 81 y 82 del Código Penal\n\n"
-        "_Idea del Abg\\. Brayan Fernando Padilla Rodríguez_\n"
+        "_Idea del Abg. Brayan Fernando Padilla Rodríguez_\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "Use /calcular para iniciar el cálculo\n"
         "Use /ayuda para ver todos los comandos"
     )
-    await update.message.reply_text(texto, parse_mode="MarkdownV2")
+    await update.message.reply_text(texto, parse_mode="Markdown")
 
 # ── /ayuda ────────────────────────────────────────────────
 async def ayuda(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -118,25 +118,25 @@ async def ayuda(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• /acerca — Información del bot\n\n"
         "*¿Qué calcula este bot?*\n"
         "Calcula la fecha mínima en la que un penado puede solicitar "
-        "la libertad condicional según los Arts\\. 81 y 82 del "
-        "Código Penal de Honduras \\(Decreto 130\\-2017\\)\\."
+        "la libertad condicional según los Arts. 81 y 82 del "
+        "Código Penal de Honduras (Decreto 130-2017)."
     )
-    await update.message.reply_text(texto, parse_mode="MarkdownV2")
+    await update.message.reply_text(texto, parse_mode="Markdown")
 
 # ── /acerca ───────────────────────────────────────────────
 async def acerca(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     texto = (
         "⚖️ *Acerca de este Bot*\n\n"
-        "🏛️ *Base legal:* Decreto N\\.º 130\\-2017\n"
+        "🏛️ *Base legal:* Decreto N.º 130-2017\n"
         "📖 *Artículos:* 81 y 82 del Código Penal de Honduras\n\n"
         "💡 *Idea y concepto:*\n"
-        "_Abg\\. Brayan Fernando Padilla Rodríguez_\n\n"
+        "_Abg. Brayan Fernando Padilla Rodríguez_\n\n"
         "📅 *Fecha de creación:* 11 de marzo de 2026\n\n"
-        "⚠️ _Este bot es una herramienta informativa\\. "
-        "Los resultados son estimaciones\\. Siempre consulte a un "
-        "abogado penalista habilitado en Honduras\\._"
+        "⚠️ _Este bot es una herramienta informativa. "
+        "Los resultados son estimaciones. Siempre consulte a un "
+        "abogado penalista habilitado en Honduras._"
     )
-    await update.message.reply_text(texto, parse_mode="MarkdownV2")
+    await update.message.reply_text(texto, parse_mode="Markdown")
 
 # ── CONVERSACIÓN: Paso 1 — Elegir artículo ───────────────
 async def calcular_inicio(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -221,9 +221,9 @@ async def ingresar_anios(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "✅ Años registrados.\n\n"
         "➡️ *Paso 4 de 5*\n\n"
-        "Ingrese los *meses* de la pena \\(0 a 11\\):\n\n"
+        "Ingrese los *meses* de la pena (0 a 11):\n\n"
         "_Ej: `6` o `0` si no hay meses adicionales_",
-        parse_mode="MarkdownV2"
+        parse_mode="Markdown"
     )
     return INGRESAR_MESES
 
@@ -237,9 +237,9 @@ async def ingresar_meses(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "✅ Meses registrados.\n\n"
         "➡️ *Paso 4b de 5*\n\n"
-        "Ingrese los *días* de la pena \\(0 a 30\\):\n\n"
+        "Ingrese los *días* de la pena (0 a 30):\n\n"
         "_Ej: `15` o `0` si no hay días adicionales_",
-        parse_mode="MarkdownV2"
+        parse_mode="Markdown"
     )
     return INGRESAR_DIAS
 
@@ -262,16 +262,16 @@ async def ingresar_dias(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if art == "82":
         if sup in ("mayores70","enfermo") and pena > 20:
             await update.message.reply_text(
-                "❌ *Error:* Este supuesto solo aplica para penas de *hasta 20 años*\\.\n\n"
-                "Use /calcular para intentar de nuevo\\.",
-                parse_mode="MarkdownV2"
+                "❌ *Error:* Este supuesto solo aplica para penas de *hasta 20 años*.\n\n"
+                "Use /calcular para intentar de nuevo.",
+                parse_mode="Markdown"
             )
             return ConversationHandler.END
         if sup == "primario" and pena > 10:
             await update.message.reply_text(
-                "❌ *Error:* El supuesto de delincuente primario solo aplica para penas de *hasta 10 años*\\.\n\n"
-                "Use /calcular para intentar de nuevo\\.",
-                parse_mode="MarkdownV2"
+                "❌ *Error:* El supuesto de delincuente primario solo aplica para penas de *hasta 10 años*.\n\n"
+                "Use /calcular para intentar de nuevo.",
+                parse_mode="Markdown"
             )
             return ConversationHandler.END
 
@@ -292,8 +292,8 @@ async def ingresar_fecha(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         fecha_sent = datetime.strptime(txt, "%d/%m/%Y").date()
     except ValueError:
         await update.message.reply_text(
-            "⚠️ Formato de fecha incorrecto\\. Use `DD/MM/AAAA`\\.\n_Ej: `15/03/2024`_",
-            parse_mode="MarkdownV2"
+            "⚠️ Formato de fecha incorrecto. Use DD/MM/AAAA\n_Ej: 15/03/2024_",
+            parse_mode="Markdown"
         )
         return INGRESAR_FECHA
 
@@ -343,8 +343,8 @@ async def ingresar_fecha(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"{'━'*30}\n"
         f"⚠️ _Resultado informativo. Sujeto a resolución judicial "
         f"y cumplimiento de requisitos de conducta, reinserción y "
-        f"responsabilidad civil \\(Arts\\. 81\\-82, Decreto 130\\-2017\\)\\._\n\n"
-        f"_Idea: Abg\\. Brayan Fernando Padilla Rodríguez_"
+        f"responsabilidad civil (Arts. 81-82, Decreto 130-2017)._\n\n"
+        f"_Idea: Abg. Brayan Fernando Padilla Rodríguez_"
     )
 
     teclado = InlineKeyboardMarkup([
@@ -352,7 +352,7 @@ async def ingresar_fecha(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("ℹ️ Acerca del bot",  callback_data="ver_acerca")],
     ])
 
-    await update.message.reply_text(resultado, parse_mode="MarkdownV2", reply_markup=teclado)
+    await update.message.reply_text(resultado, parse_mode="Markdown", reply_markup=teclado)
     ctx.user_data.clear()
     return ConversationHandler.END
 
@@ -361,7 +361,7 @@ async def boton_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     if query.data == "nuevo_calculo":
-        await query.message.reply_text("Use /calcular para iniciar un nuevo cálculo\\.", parse_mode="MarkdownV2")
+        await query.message.reply_text("Use /calcular para iniciar un nuevo cálculo.")
     elif query.data == "ver_acerca":
         await acerca(query, ctx)
 
