@@ -1,14 +1,6 @@
-"""
-╔══════════════════════════════════════════════════════╗
-║   Bot de Libertad Condicional — Honduras             ║
-║   Decreto 130-2017 · Arts. 81 y 82                  ║
-║   Idea: Abg. Brayan Fernando Padilla Rodríguez      ║
-╚══════════════════════════════════════════════════════╝
-"""
-
-import os
-import logging
-from datetime import datetime, date
+"""Bot de Libertad Condicional Honduras v2.0"""
+import os, logging
+from datetime import date
 from dateutil.relativedelta import relativedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -16,391 +8,411 @@ from telegram.ext import (
     MessageHandler, ConversationHandler, filters, ContextTypes
 )
 
-# ── Logging ───────────────────────────────────────────────
-logging.basicConfig(
-    format="%(asctime)s — %(name)s — %(levelname)s — %(message)s",
-    level=logging.INFO
-)
+logging.basicConfig(format="%(asctime)s — %(levelname)s — %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ── Estados de la conversación ────────────────────────────
-ELEGIR_ARTICULO, ELEGIR_SUP82, INGRESAR_ANIOS, INGRESAR_MESES, \
-INGRESAR_DIAS, INGRESAR_FECHA = range(6)
+(ELEGIR_ART, ELEGIR_SUP82, FECHA_SENTENCIA, PENA_ANIOS, PENA_MESES,
+ SEGUNDA_PREGUNTA, PENA2_ANIOS, PENA2_MESES, FECHA_INICIO2) = range(9)
 
-# ── Helpers de cálculo ────────────────────────────────────
-def calcular_libertad(art, sup82, pena_a, pena_m, pena_d, fecha_sent):
-    """Calcula la fecha de libertad condicional según Arts. 81 y 82."""
-    pena_decimal = pena_a + pena_m / 12 + pena_d / 365
-    total_dias   = pena_a * 365 + pena_m * 30 + pena_d
+MESES_ES = ["enero","febrero","marzo","abril","mayo","junio",
+            "julio","agosto","septiembre","octubre","noviembre","diciembre"]
 
+def fmt(d):
+    return f"{d.day} de {MESES_ES[d.month-1]} de {d.year} ({d.strftime('%d/%m/%Y')})"
+
+def parse_fecha(txt):
+    from datetime import datetime
+    for f in ("%d/%m/%Y", "%d-%m-%Y", "%d/%m/%y"):
+        try:
+            return datetime.strptime(txt.strip(), f).date()
+        except ValueError:
+            continue
+    return None
+
+def calcular_lc(art, sup82, pena_a, pena_m, inicio):
+    pena_decimal = pena_a + pena_m / 12
+    total_dias   = pena_a * 365 + pena_m * 30
     if art == "81":
         if pena_decimal <= 15:
-            fraccion   = "½ (mitad)"
-            min_dias   = total_dias / 2
-            tramo      = "Tramo 1 — Pena ≤ 15 años"
+            fraccion = "1/2 (mitad)"
+            min_dias = total_dias / 2
         elif pena_decimal < 30:
-            fraccion   = "⅔ (dos tercios)"
-            min_dias   = total_dias * 2 / 3
-            tramo      = "Tramo 2 — Pena entre 15 y 30 años"
+            fraccion = "2/3 (dos tercios)"
+            min_dias = total_dias * 2 / 3
         else:
-            fraccion   = "30 años fijos"
-            min_dias   = 30 * 365
-            tramo      = "Tramo 3 — Pena ≥ 30 años"
+            fraccion = "30 anos fijos"
+            min_dias = 30 * 365
     else:
         if sup82 in ("mayores70", "enfermo"):
-            fraccion   = "Sin fracción mínima"
-            min_dias   = 0
-            tramo      = "Mayores de 70 años" if sup82 == "mayores70" else "Enfermo grave incurable"
+            return inicio, "Sin fraccion minima"
         else:
-            fraccion   = "⅓ (un tercio)"
-            min_dias   = total_dias / 3
-            tramo      = "Delincuente primario"
-
-    # Convertir días mínimos a años/meses/días
+            fraccion = "1/3 (un tercio)"
+            min_dias = total_dias / 3
     min_a = int(min_dias // 365)
     resto = min_dias - min_a * 365
     min_m = int(resto // 30)
     min_d = round(resto - min_m * 30)
+    return inicio + relativedelta(years=min_a, months=min_m, days=min_d), fraccion
 
-    # Calcular fechas
-    fecha_lib = fecha_sent + relativedelta(years=min_a, months=min_m, days=min_d)
-    fecha_fin = fecha_sent + relativedelta(years=pena_a, months=pena_m, days=pena_d)
-
-    # Período de libertad condicional
-    diff_per = relativedelta(fecha_fin, fecha_lib)
-
-    # Porcentaje
-    pct = round((min_dias / total_dias * 100) if total_dias > 0 else 0)
-
-    return {
-        "fraccion"  : fraccion,
-        "tramo"     : tramo,
-        "min_a"     : min_a,
-        "min_m"     : min_m,
-        "min_d"     : min_d,
-        "pct"       : pct,
-        "fecha_lib" : fecha_lib,
-        "fecha_fin" : fecha_fin,
-        "periodo_a" : diff_per.years,
-        "periodo_m" : diff_per.months,
-        "periodo_d" : diff_per.days,
-    }
-
-def fmt_fecha(d):
-    meses = ["enero","febrero","marzo","abril","mayo","junio",
-             "julio","agosto","septiembre","octubre","noviembre","diciembre"]
-    return f"{d.day} de {meses[d.month-1]} de {d.year}"
-
-def barra_progreso(pct):
-    filled = round(pct / 10)
-    return "█" * filled + "░" * (10 - filled)
-
-# ── /start ────────────────────────────────────────────────
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    texto = (
-        "⚖️ *Bienvenido al Bot de Libertad Condicional*\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "📋 *Decreto N.º 130-2017 — Honduras*\n"
-        "📌 Artículos 81 y 82 del Código Penal\n\n"
-        "_Idea del Abg. Brayan Fernando Padilla Rodríguez_\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "Use /calcular para iniciar el cálculo\n"
-        "Use /ayuda para ver todos los comandos"
+    await update.message.reply_text(
+        "Bienvenido al Bot de Libertad Condicional Honduras\n"
+        "Decreto 130-2017 - Arts. 81 y 82\n"
+        "Idea: Abg. Brayan Fernando Padilla Rodriguez\n\n"
+        "Comandos:\n"
+        "/calcular - Iniciar calculo\n"
+        "/ayuda - Ver ayuda\n"
+        "/acerca - Informacion"
     )
-    await update.message.reply_text(texto, parse_mode="Markdown")
 
-# ── /ayuda ────────────────────────────────────────────────
 async def ayuda(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    texto = (
-        "⚖️ *Comandos disponibles*\n\n"
-        "• /calcular — Iniciar un nuevo cálculo\n"
-        "• /ayuda — Ver esta ayuda\n"
-        "• /acerca — Información del bot\n\n"
-        "*¿Qué calcula este bot?*\n"
-        "Calcula la fecha mínima en la que un penado puede solicitar "
-        "la libertad condicional según los Arts. 81 y 82 del "
-        "Código Penal de Honduras (Decreto 130-2017)."
+    await update.message.reply_text(
+        "Ayuda - Libertad Condicional\n\n"
+        "Como usar:\n"
+        "1. /calcular\n"
+        "2. Seleccionar articulo\n"
+        "3. Ingresar fecha de sentencia\n"
+        "4. Ingresar anos y meses de pena\n"
+        "5. Indicar si hay segunda condena\n\n"
+        "Articulos:\n"
+        "Art. 81: Regla general (1/2, 2/3, 30 anos)\n"
+        "Art. 82: Mayores 70, enfermo, primario (1/3)"
     )
-    await update.message.reply_text(texto, parse_mode="Markdown")
 
-# ── /acerca ───────────────────────────────────────────────
 async def acerca(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    texto = (
-        "⚖️ *Acerca de este Bot*\n\n"
-        "🏛️ *Base legal:* Decreto N.º 130-2017\n"
-        "📖 *Artículos:* 81 y 82 del Código Penal de Honduras\n\n"
-        "💡 *Idea y concepto:*\n"
-        "_Abg. Brayan Fernando Padilla Rodríguez_\n\n"
-        "📅 *Fecha de creación:* 11 de marzo de 2026\n\n"
-        "⚠️ _Este bot es una herramienta informativa. "
-        "Los resultados son estimaciones. Siempre consulte a un "
-        "abogado penalista habilitado en Honduras._"
+    msg = getattr(update, 'message', None) or update.callback_query.message
+    await msg.reply_text(
+        "Acerca del Bot\n\n"
+        "Base legal: Decreto 130-2017\n"
+        "Arts. 81 y 82 del Codigo Penal de Honduras\n"
+        "Idea: Abg. Brayan Fernando Padilla Rodriguez\n"
+        "Creado: 11 de marzo de 2026\n\n"
+        "Herramienta informativa. Consulte siempre a un abogado habilitado en Honduras."
     )
-    await update.message.reply_text(texto, parse_mode="Markdown")
 
-# ── CONVERSACIÓN: Paso 1 — Elegir artículo ───────────────
 async def calcular_inicio(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data.clear()
     teclado = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📗 Artículo 81 — Régimen General",    callback_data="art_81")],
-        [InlineKeyboardButton("📙 Artículo 82 — Régimen Excepcional", callback_data="art_82")],
+        [InlineKeyboardButton("Art. 81 - Regimen General",     callback_data="art_81")],
+        [InlineKeyboardButton("Art. 82 - Regimen Excepcional", callback_data="art_82")],
     ])
-    await update.message.reply_text(
-        "⚖️ *Paso 1 de 5 — Artículo aplicable*\n\n"
-        "Seleccione el artículo que corresponde al caso:",
-        reply_markup=teclado,
-        parse_mode="Markdown"
-    )
-    return ELEGIR_ARTICULO
+    await update.message.reply_text("Paso 1 - Seleccione el articulo:", reply_markup=teclado)
+    return ELEGIR_ART
 
-# ── Paso 1: Respuesta artículo ────────────────────────────
-async def elegir_articulo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def elegir_art(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     art = query.data.split("_")[1]
-    ctx.user_data["articulo"] = art
-
+    ctx.user_data["art"] = art
     if art == "82":
         teclado = InlineKeyboardMarkup([
-            [InlineKeyboardButton("👴 Mayores de 70 años",          callback_data="sup_mayores70")],
-            [InlineKeyboardButton("🏥 Enfermo grave incurable",      callback_data="sup_enfermo")],
-            [InlineKeyboardButton("📗 Delincuente primario (1/3)",   callback_data="sup_primario")],
+            [InlineKeyboardButton("Mayores de 70 anos",        callback_data="sup_mayores70")],
+            [InlineKeyboardButton("Enfermo grave incurable",    callback_data="sup_enfermo")],
+            [InlineKeyboardButton("Delincuente primario (1/3)", callback_data="sup_primario")],
         ])
-        await query.edit_message_text(
-            "📙 *Artículo 82 — Paso 2 de 5*\n\n"
-            "Seleccione el supuesto excepcional:",
-            reply_markup=teclado,
-            parse_mode="Markdown"
-        )
+        await query.edit_message_text("Art. 82 - Seleccione el supuesto:", reply_markup=teclado)
         return ELEGIR_SUP82
-    else:
-        ctx.user_data["sup82"] = None
-        await query.edit_message_text(
-            "📗 *Artículo 81 — Paso 2 de 5*\n\n"
-            "Ingrese los *años* de la pena de prisión:\n\n"
-            "_Escriba solo el número. Ej: `15` o `0` si no hay años_",
-            parse_mode="Markdown"
-        )
-        return INGRESAR_ANIOS
+    ctx.user_data["sup82"] = None
+    teclado = InlineKeyboardMarkup([[InlineKeyboardButton("Usar fecha de hoy", callback_data="fecha_hoy")]])
+    await query.edit_message_text(
+        "Art. 81 seleccionado.\n\nPaso 2 - Fecha de sentencia firme\nIngrese DD/MM/AAAA o use el boton:",
+        reply_markup=teclado
+    )
+    return FECHA_SENTENCIA
 
-# ── Paso 2: Supuesto Art. 82 ──────────────────────────────
 async def elegir_sup82(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     sup = query.data.split("_", 1)[1]
     ctx.user_data["sup82"] = sup
-
-    limites = {
-        "mayores70": "⚠️ _Recuerde: la pena no debe superar los 20 años_",
-        "enfermo":   "⚠️ _Recuerde: la pena no debe superar los 20 años_",
-        "primario":  "⚠️ _Recuerde: la pena no debe superar los 10 años_",
-    }
-    nombres = {
-        "mayores70": "👴 Mayores de 70 años",
-        "enfermo":   "🏥 Enfermo grave incurable",
-        "primario":  "📗 Delincuente primario",
-    }
-
+    teclado = InlineKeyboardMarkup([[InlineKeyboardButton("Usar fecha de hoy", callback_data="fecha_hoy")]])
     await query.edit_message_text(
-        f"📙 *Art. 82 — {nombres[sup]}*\n"
-        f"{limites[sup]}\n\n"
-        "➡️ *Paso 3 de 5*\n\n"
-        "Ingrese los *años* de la pena de prisión:\n\n"
-        "_Escriba solo el número. Ej: `8` o `0` si no hay años_",
-        parse_mode="Markdown"
+        f"Supuesto seleccionado.\n\nPaso 2 - Fecha de sentencia firme\nIngrese DD/MM/AAAA o use el boton:",
+        reply_markup=teclado
     )
-    return INGRESAR_ANIOS
+    return FECHA_SENTENCIA
 
-# ── Paso 3: Años ──────────────────────────────────────────
-async def ingresar_anios(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def fecha_hoy_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    ctx.user_data["fecha_sent"] = date.today()
+    await query.edit_message_text(
+        f"Fecha: {fmt(date.today())}\n\nPaso 3 - Anos de la pena\nIngrese los anos (0 si es solo meses):"
+    )
+    return PENA_ANIOS
+
+async def recibir_fecha_sentencia(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    d = parse_fecha(update.message.text)
+    if not d:
+        await update.message.reply_text("Formato incorrecto. Use DD/MM/AAAA (ej: 29/03/2023)")
+        return FECHA_SENTENCIA
+    ctx.user_data["fecha_sent"] = d
+    await update.message.reply_text(
+        f"Fecha: {fmt(d)}\n\nPaso 3 - Anos de la pena\nIngrese los anos (0 si es solo meses):"
+    )
+    return PENA_ANIOS
+
+async def recibir_pena_anios(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     txt = update.message.text.strip()
     if not txt.isdigit():
-        await update.message.reply_text("⚠️ Por favor ingrese solo un número entero. Ej: `10`", parse_mode="Markdown")
-        return INGRESAR_ANIOS
+        await update.message.reply_text("Ingrese solo un numero. Ej: 5")
+        return PENA_ANIOS
     ctx.user_data["pena_a"] = int(txt)
+    teclado = InlineKeyboardMarkup([
+        [InlineKeyboardButton("0m", callback_data="mes_0"), InlineKeyboardButton("1m", callback_data="mes_1"),
+         InlineKeyboardButton("2m", callback_data="mes_2"), InlineKeyboardButton("3m", callback_data="mes_3")],
+        [InlineKeyboardButton("4m", callback_data="mes_4"), InlineKeyboardButton("5m", callback_data="mes_5"),
+         InlineKeyboardButton("6m", callback_data="mes_6"), InlineKeyboardButton("7m", callback_data="mes_7")],
+        [InlineKeyboardButton("8m", callback_data="mes_8"), InlineKeyboardButton("9m", callback_data="mes_9"),
+         InlineKeyboardButton("10m", callback_data="mes_10"), InlineKeyboardButton("11m", callback_data="mes_11")],
+    ])
     await update.message.reply_text(
-        "✅ Años registrados.\n\n"
-        "➡️ *Paso 4 de 5*\n\n"
-        "Ingrese los *meses* de la pena (0 a 11):\n\n"
-        "_Ej: `6` o `0` si no hay meses adicionales_",
-        parse_mode="Markdown"
+        f"Anos: {ctx.user_data['pena_a']}\n\nPaso 4 - Meses de la pena\nSeleccione o escriba (0-11):",
+        reply_markup=teclado
     )
-    return INGRESAR_MESES
+    return PENA_MESES
 
-# ── Paso 4: Meses ─────────────────────────────────────────
-async def ingresar_meses(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def mes_rapido_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    meses = int(query.data.split("_")[1])
+    ctx.user_data["pena_m"] = meses
+    return await _preguntar_segunda(query.message, ctx, editar=False)
+
+async def recibir_pena_meses(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     txt = update.message.text.strip()
     if not txt.isdigit() or int(txt) > 11:
-        await update.message.reply_text("⚠️ Ingrese un número entre 0 y 11.", parse_mode="Markdown")
-        return INGRESAR_MESES
+        await update.message.reply_text("Ingrese un numero del 0 al 11.")
+        return PENA_MESES
     ctx.user_data["pena_m"] = int(txt)
-    await update.message.reply_text(
-        "✅ Meses registrados.\n\n"
-        "➡️ *Paso 4b de 5*\n\n"
-        "Ingrese los *días* de la pena (0 a 30):\n\n"
-        "_Ej: `15` o `0` si no hay días adicionales_",
-        parse_mode="Markdown"
-    )
-    return INGRESAR_DIAS
+    return await _preguntar_segunda(update.message, ctx, editar=False)
 
-# ── Paso 5: Días ──────────────────────────────────────────
-async def ingresar_dias(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    txt = update.message.text.strip()
-    if not txt.isdigit() or int(txt) > 30:
-        await update.message.reply_text("⚠️ Ingrese un número entre 0 y 30.", parse_mode="Markdown")
-        return INGRESAR_DIAS
-    ctx.user_data["pena_d"] = int(txt)
-
-    # Validar límites art. 82
-    art  = ctx.user_data["articulo"]
-    sup  = ctx.user_data.get("sup82")
-    pa   = ctx.user_data["pena_a"]
-    pm   = ctx.user_data["pena_m"]
-    pd   = int(txt)
-    pena = pa + pm/12 + pd/365
-
-    if art == "82":
-        if sup in ("mayores70","enfermo") and pena > 20:
-            await update.message.reply_text(
-                "❌ *Error:* Este supuesto solo aplica para penas de *hasta 20 años*.\n\n"
-                "Use /calcular para intentar de nuevo.",
-                parse_mode="Markdown"
-            )
-            return ConversationHandler.END
-        if sup == "primario" and pena > 10:
-            await update.message.reply_text(
-                "❌ *Error:* El supuesto de delincuente primario solo aplica para penas de *hasta 10 años*.\n\n"
-                "Use /calcular para intentar de nuevo.",
-                parse_mode="Markdown"
-            )
-            return ConversationHandler.END
-
-    await update.message.reply_text(
-        "✅ Pena registrada.\n\n"
-        "➡️ *Paso 5 de 5 — Fecha de sentencia*\n\n"
-        "Ingrese la fecha en que la sentencia adquirió firmeza:\n\n"
-        "📅 Formato: `DD/MM/AAAA`\n"
-        "_Ej: `15/03/2024`_",
-        parse_mode="Markdown"
-    )
-    return INGRESAR_FECHA
-
-# ── Paso 6: Fecha y resultado final ───────────────────────
-async def ingresar_fecha(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    txt = update.message.text.strip()
-    try:
-        fecha_sent = datetime.strptime(txt, "%d/%m/%Y").date()
-    except ValueError:
-        await update.message.reply_text(
-            "⚠️ Formato de fecha incorrecto. Use DD/MM/AAAA\n_Ej: 15/03/2024_",
-            parse_mode="Markdown"
-        )
-        return INGRESAR_FECHA
-
-    # Recoger datos
-    art    = ctx.user_data["articulo"]
-    sup    = ctx.user_data.get("sup82")
+async def _preguntar_segunda(msg, ctx, editar=False):
+    art = ctx.user_data["art"]
+    sup = ctx.user_data.get("sup82")
     pena_a = ctx.user_data["pena_a"]
     pena_m = ctx.user_data["pena_m"]
-    pena_d = ctx.user_data["pena_d"]
+    pena = pena_a + pena_m / 12
+    if art == "82":
+        if sup in ("mayores70", "enfermo") and pena > 20:
+            await msg.reply_text("Error: Este supuesto solo aplica para penas de hasta 20 anos.\nUse /calcular para reiniciar.")
+            return ConversationHandler.END
+        if sup == "primario" and pena > 10:
+            await msg.reply_text("Error: Este supuesto solo aplica para penas de hasta 10 anos.\nUse /calcular para reiniciar.")
+            return ConversationHandler.END
+    teclado = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Si, hay segunda condena", callback_data="seg_si")],
+        [InlineKeyboardButton("No, solo una condena",    callback_data="seg_no")],
+    ])
+    texto = f"Pena: {pena_a} ano(s) y {pena_m} mes(es)\n\nPaso 5 - Existe una segunda sentencia pendiente de cumplir?"
+    await msg.reply_text(texto, reply_markup=teclado)
+    return SEGUNDA_PREGUNTA
 
-    if pena_a == 0 and pena_m == 0 and pena_d == 0:
-        await update.message.reply_text("❌ La pena no puede ser cero. Use /calcular para reiniciar.")
+async def segunda_pregunta_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if query.data == "seg_no":
+        ctx.user_data["segunda"] = False
+        return await generar_resultado(query.message, ctx)
+    ctx.user_data["segunda"] = True
+    await query.edit_message_text(
+        "Segunda condena - Tiempo pendiente\n\nIngrese los anos pendientes (0 si es solo meses):"
+    )
+    return PENA2_ANIOS
+
+async def recibir_pena2_anios(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    txt = update.message.text.strip()
+    if not txt.isdigit():
+        await update.message.reply_text("Ingrese solo un numero. Ej: 1")
+        return PENA2_ANIOS
+    ctx.user_data["pena2_a"] = int(txt)
+    teclado = InlineKeyboardMarkup([
+        [InlineKeyboardButton("0m", callback_data="mes2_0"), InlineKeyboardButton("1m", callback_data="mes2_1"),
+         InlineKeyboardButton("2m", callback_data="mes2_2"), InlineKeyboardButton("3m", callback_data="mes2_3")],
+        [InlineKeyboardButton("4m", callback_data="mes2_4"), InlineKeyboardButton("5m", callback_data="mes2_5"),
+         InlineKeyboardButton("6m", callback_data="mes2_6"), InlineKeyboardButton("7m", callback_data="mes2_7")],
+        [InlineKeyboardButton("8m", callback_data="mes2_8"), InlineKeyboardButton("9m", callback_data="mes2_9"),
+         InlineKeyboardButton("10m", callback_data="mes2_10"), InlineKeyboardButton("11m", callback_data="mes2_11")],
+    ])
+    await update.message.reply_text(
+        f"Anos segunda condena: {ctx.user_data['pena2_a']}\n\nSeleccione los meses pendientes:",
+        reply_markup=teclado
+    )
+    return PENA2_MESES
+
+async def mes2_rapido_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    meses = int(query.data.split("_")[1])
+    ctx.user_data["pena2_m"] = meses
+    teclado = InlineKeyboardMarkup([[InlineKeyboardButton("Calcular automaticamente (recomendado)", callback_data="fecha2_auto")]])
+    await query.edit_message_text(
+        f"Segunda condena: {ctx.user_data['pena2_a']} ano(s) y {meses} mes(es)\n\n"
+        "Fecha de inicio de la segunda condena\n"
+        "Normalmente es el dia siguiente al fin de la primera.\n"
+        "Use el boton o ingrese DD/MM/AAAA:",
+        reply_markup=teclado
+    )
+    return FECHA_INICIO2
+
+async def recibir_pena2_meses(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    txt = update.message.text.strip()
+    if not txt.isdigit() or int(txt) > 11:
+        await update.message.reply_text("Ingrese un numero del 0 al 11.")
+        return PENA2_MESES
+    ctx.user_data["pena2_m"] = int(txt)
+    teclado = InlineKeyboardMarkup([[InlineKeyboardButton("Calcular automaticamente (recomendado)", callback_data="fecha2_auto")]])
+    await update.message.reply_text(
+        f"Segunda condena: {ctx.user_data['pena2_a']} ano(s) y {ctx.user_data['pena2_m']} mes(es)\n\n"
+        "Fecha inicio segunda condena - Use el boton o ingrese DD/MM/AAAA:",
+        reply_markup=teclado
+    )
+    return FECHA_INICIO2
+
+async def fecha2_auto_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    fecha_sent = ctx.user_data["fecha_sent"]
+    pena_a = ctx.user_data["pena_a"]
+    pena_m = ctx.user_data["pena_m"]
+    fin_primera = fecha_sent + relativedelta(years=pena_a, months=pena_m)
+    inicio2 = fin_primera + relativedelta(days=1)
+    ctx.user_data["inicio2"] = inicio2
+    await query.edit_message_text(f"Inicio segunda condena: {fmt(inicio2)} (automatico)")
+    return await generar_resultado(query.message, ctx)
+
+async def recibir_fecha_inicio2(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    d = parse_fecha(update.message.text)
+    if not d:
+        await update.message.reply_text("Formato incorrecto. Use DD/MM/AAAA")
+        return FECHA_INICIO2
+    ctx.user_data["inicio2"] = d
+    return await generar_resultado(update.message, ctx)
+
+async def generar_resultado(msg, ctx):
+    art        = ctx.user_data["art"]
+    sup82      = ctx.user_data.get("sup82")
+    pena_a     = ctx.user_data["pena_a"]
+    pena_m     = ctx.user_data["pena_m"]
+    fecha_sent = ctx.user_data["fecha_sent"]
+    segunda    = ctx.user_data.get("segunda", False)
+
+    if pena_a == 0 and pena_m == 0:
+        await msg.reply_text("La pena no puede ser cero. Use /calcular para reiniciar.")
         return ConversationHandler.END
 
-    # Calcular
-    r = calcular_libertad(art, sup, pena_a, pena_m, pena_d, fecha_sent)
+    fin_primera = fecha_sent + relativedelta(years=pena_a, months=pena_m)
+    art_txt = "Art. 81 - Regimen General" if art == "81" else "Art. 82 - Regimen Excepcional"
 
-    # Nombres legibles
-    art_nom = "Artículo 81 — Régimen General" if art=="81" else "Artículo 82 — Régimen Excepcional"
-    barra   = barra_progreso(r["pct"])
-
-    # Resumen de pena
-    pena_txt = f"{pena_a}a {pena_m}m {pena_d}d"
-
-    # Construir mensaje de resultado
-    resultado = (
-        f"⚖️ *RESULTADO — LIBERTAD CONDICIONAL*\n"
-        f"{'━'*30}\n\n"
-        f"📋 *{art_nom}*\n"
-        f"📌 *Supuesto:* {r['tramo']}\n"
-        f"⚖️ *Fracción aplicada:* {r['fraccion']}\n\n"
-        f"{'─'*30}\n"
-        f"📊 *PENA IMPUESTA:* `{pena_txt}`\n"
-        f"⏳ *Tiempo mínimo a cumplir:*\n"
-        f"   `{r['min_a']} años, {r['min_m']} meses y {r['min_d']} días`\n\n"
-        f"📈 *Progreso:* {barra} {r['pct']}%\n\n"
-        f"{'─'*30}\n"
-        f"🗓️ *LÍNEA DE TIEMPO*\n\n"
-        f"🔵 *Inicio (sentencia firme):*\n"
-        f"   {fmt_fecha(fecha_sent)}\n\n"
-        f"🟡 *Fecha mínima — Libertad Condicional:*\n"
-        f"   *{fmt_fecha(r['fecha_lib'])}*\n\n"
-        f"🔴 *Fin de condena (extinción):*\n"
-        f"   {fmt_fecha(r['fecha_fin'])}\n\n"
-        f"📅 *Período en lib. condicional:*\n"
-        f"   `{r['periodo_a']} año(s), {r['periodo_m']} mes(es) y {r['periodo_d']} día(s)`\n\n"
-        f"{'━'*30}\n"
-        f"⚠️ _Resultado informativo. Sujeto a resolución judicial "
-        f"y cumplimiento de requisitos de conducta, reinserción y "
-        f"responsabilidad civil (Arts. 81-82, Decreto 130-2017)._\n\n"
-        f"_Idea: Abg. Brayan Fernando Padilla Rodríguez_"
-    )
+    if not segunda:
+        fecha_lc, fraccion = calcular_lc(art, sup82, pena_a, pena_m, fecha_sent)
+        periodo_lc = relativedelta(fin_primera, fecha_lc)
+        resumen = (
+            f"RESULTADO - LIBERTAD CONDICIONAL\n"
+            f"{'='*30}\n\n"
+            f"{art_txt}\n"
+            f"Pena: {pena_a} ano(s) y {pena_m} mes(es)\n"
+            f"Fraccion aplicada: {fraccion}\n\n"
+            f"LINEA DE TIEMPO\n"
+            f"{'─'*30}\n\n"
+            f"Sentencia firme:\n   {fmt(fecha_sent)}\n\n"
+            f"LIBERTAD CONDICIONAL (minimo):\n   {fmt(fecha_lc)}\n"
+            f"   Fraccion: {fraccion}\n\n"
+            f"Fin de condena:\n   {fmt(fin_primera)}\n"
+            f"   Periodo en LC: {periodo_lc.years}a {periodo_lc.months}m {periodo_lc.days}d\n\n"
+            f"{'='*30}\n"
+            f"Resultado informativo. Sujeto a resolucion judicial\n"
+            f"y cumplimiento de Arts. 81-82, Decreto 130-2017.\n"
+            f"Idea: Abg. Brayan Fernando Padilla Rodriguez"
+        )
+    else:
+        pena2_a = ctx.user_data["pena2_a"]
+        pena2_m = ctx.user_data["pena2_m"]
+        inicio2 = ctx.user_data.get("inicio2", fin_primera + relativedelta(days=1))
+        fin2    = inicio2 + relativedelta(years=pena2_a, months=pena2_m)
+        fecha_lc, fraccion = calcular_lc(art, sup82, pena2_a, pena2_m, inicio2)
+        periodo_lc = relativedelta(fin2, fecha_lc)
+        resumen = (
+            f"RESULTADO - LIBERTAD CONDICIONAL\n"
+            f"{'='*30}\n\n"
+            f"{art_txt}\n\n"
+            f"1ra condena: {pena_a} ano(s) y {pena_m} mes(es)\n"
+            f"2da condena: {pena2_a} ano(s) y {pena2_m} mes(es) pendientes\n"
+            f"Fraccion LC: {fraccion} (sobre 2da condena)\n\n"
+            f"LINEA DE TIEMPO\n"
+            f"{'─'*30}\n\n"
+            f"Sentencia firme (1ra condena):\n   {fmt(fecha_sent)}\n\n"
+            f"Fin 1ra condena ({pena_a}a {pena_m}m):\n   {fmt(fin_primera)}\n\n"
+            f"Inicio 2da condena:\n   {fmt(inicio2)}\n\n"
+            f"LIBERTAD CONDICIONAL (minimo):\n   {fmt(fecha_lc)}\n"
+            f"   Fraccion sobre 2da condena: {fraccion}\n\n"
+            f"Fin total de condena:\n   {fmt(fin2)}\n"
+            f"   Periodo en LC: {periodo_lc.years}a {periodo_lc.months}m {periodo_lc.days}d\n\n"
+            f"{'='*30}\n"
+            f"Resultado informativo. Sujeto a resolucion judicial.\n"
+            f"Idea: Abg. Brayan Fernando Padilla Rodriguez"
+        )
 
     teclado = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔄 Nuevo cálculo", callback_data="nuevo_calculo")],
-        [InlineKeyboardButton("ℹ️ Acerca del bot",  callback_data="ver_acerca")],
+        [InlineKeyboardButton("Nuevo calculo", callback_data="nuevo_calculo")],
+        [InlineKeyboardButton("Acerca del bot", callback_data="ver_acerca")],
     ])
-
-    await update.message.reply_text(resultado, parse_mode="Markdown", reply_markup=teclado)
+    await msg.reply_text(resumen, reply_markup=teclado)
     ctx.user_data.clear()
     return ConversationHandler.END
 
-# ── Botones de resultado ──────────────────────────────────
 async def boton_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     if query.data == "nuevo_calculo":
-        await query.message.reply_text("Use /calcular para iniciar un nuevo cálculo.")
+        await query.message.reply_text("Use /calcular para iniciar un nuevo calculo.")
     elif query.data == "ver_acerca":
-        await acerca(query, ctx)
+        await acerca(update, ctx)
 
-# ── Cancelar ──────────────────────────────────────────────
 async def cancelar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data.clear()
-    await update.message.reply_text("❌ Cálculo cancelado. Use /calcular para iniciar de nuevo.")
+    await update.message.reply_text("Calculo cancelado. Use /calcular para reiniciar.")
     return ConversationHandler.END
 
-# ── Main ──────────────────────────────────────────────────
 def main():
     TOKEN = os.environ.get("TELEGRAM_TOKEN")
     if not TOKEN:
-        raise ValueError("❌ Falta la variable de entorno TELEGRAM_TOKEN")
-
+        raise ValueError("Falta TELEGRAM_TOKEN")
     app = Application.builder().token(TOKEN).build()
-
-    # Conversación principal
     conv = ConversationHandler(
         entry_points=[CommandHandler("calcular", calcular_inicio)],
         states={
-            ELEGIR_ARTICULO : [CallbackQueryHandler(elegir_articulo, pattern="^art_")],
-            ELEGIR_SUP82    : [CallbackQueryHandler(elegir_sup82,    pattern="^sup_")],
-            INGRESAR_ANIOS  : [MessageHandler(filters.TEXT & ~filters.COMMAND, ingresar_anios)],
-            INGRESAR_MESES  : [MessageHandler(filters.TEXT & ~filters.COMMAND, ingresar_meses)],
-            INGRESAR_DIAS   : [MessageHandler(filters.TEXT & ~filters.COMMAND, ingresar_dias)],
-            INGRESAR_FECHA  : [MessageHandler(filters.TEXT & ~filters.COMMAND, ingresar_fecha)],
+            ELEGIR_ART:       [CallbackQueryHandler(elegir_art, pattern="^art_")],
+            ELEGIR_SUP82:     [CallbackQueryHandler(elegir_sup82, pattern="^sup_")],
+            FECHA_SENTENCIA:  [
+                CallbackQueryHandler(fecha_hoy_callback, pattern="^fecha_hoy$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_fecha_sentencia),
+            ],
+            PENA_ANIOS:       [MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_pena_anios)],
+            PENA_MESES:       [
+                CallbackQueryHandler(mes_rapido_callback, pattern="^mes_\\d+$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_pena_meses),
+            ],
+            SEGUNDA_PREGUNTA: [CallbackQueryHandler(segunda_pregunta_cb, pattern="^seg_")],
+            PENA2_ANIOS:      [MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_pena2_anios)],
+            PENA2_MESES:      [
+                CallbackQueryHandler(mes2_rapido_callback, pattern="^mes2_\\d+$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_pena2_meses),
+            ],
+            FECHA_INICIO2:    [
+                CallbackQueryHandler(fecha2_auto_callback, pattern="^fecha2_auto$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_fecha_inicio2),
+            ],
         },
         fallbacks=[CommandHandler("cancelar", cancelar)],
         allow_reentry=True,
     )
-
-    app.add_handler(CommandHandler("start",   start))
-    app.add_handler(CommandHandler("ayuda",   ayuda))
-    app.add_handler(CommandHandler("acerca",  acerca))
+    app.add_handler(CommandHandler("start",  start))
+    app.add_handler(CommandHandler("ayuda",  ayuda))
+    app.add_handler(CommandHandler("acerca", acerca))
     app.add_handler(conv)
     app.add_handler(CallbackQueryHandler(boton_callback))
-
-    logger.info("🤖 Bot iniciado correctamente...")
+    logger.info("Bot v2.0 iniciado correctamente...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
